@@ -1,0 +1,4 @@
+*.so
+main/mrmaster
+main/mrworker
+tmp/
