@@ -2,6 +2,7 @@ package mr
 
 import (
 	"errors"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/colinmarc/hdfs/v2"
 )
 
 type WorkID int
@@ -123,10 +126,7 @@ func (c *Master) FinishTask(args *FinishTask, reply *ReplyArgs) error {
 func (c *Master) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
-	// l, e := net.Listen("tcp", ":1234")
-	sockname := masterSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	l, e := net.Listen("tcp", ":1234")
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
@@ -156,9 +156,35 @@ func MakeMaster(files []string, nReduce int) *Master {
 	c.ReduceWg.Add(nReduce)
 
 	// generate map task
+	client, e := hdfs.New(masterAddress + ":9000")
+	if e != nil {
+		log.Fatal("hdfs error:", e)
+	}
+
 	var i TaskID
 	for f := range files {
-		c.Tasks <- TaskInfo{true, []string{files[f]}, i}
+    client.Mkdir("/mr", 0644)
+
+		// upload input files
+		localFile, e := os.Open(files[f])
+		if e != nil {
+			log.Fatal("open file error:", e)
+		}
+
+		hdfsFile, e := client.Create("/mr/" + files[f])
+		if e != nil {
+			log.Fatal("hdfs create file error:", e)
+		}
+
+		_, e = io.Copy(hdfsFile, localFile)
+		if e != nil {
+			log.Fatal("hdfs copy file error:", e)
+		}
+
+		localFile.Close()
+		hdfsFile.Close()
+
+		c.Tasks <- TaskInfo{true, []string{"/mr/" + files[f]}, i}
 		i++
 	}
 

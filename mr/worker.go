@@ -7,9 +7,12 @@ import (
 	"io"
 	"log"
 	"net/rpc"
-	"os"
 	"sort"
+
+	"github.com/colinmarc/hdfs/v2"
 )
+
+const masterAddress = "127.0.0.1"
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -48,6 +51,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	// 2. ask for task
+	client, e := hdfs.New(masterAddress + ":9000")
+	if e != nil {
+		log.Fatal("hdfs error:", e)
+	}
+
 	for {
 		task := ReplyTask{}
 		ok := call("Master.ApplyTask", &AskTask{workID}, &task)
@@ -60,20 +68,32 @@ func Worker(mapf func(string, string) []KeyValue,
 			if task.IsMap {
 				for _, filename := range task.InputFiles {
 					// open and get content
-					content := ReadFile(filename)
+					file, e := client.Open(filename)
+					if e != nil {
+						log.Fatal("hdfs open file error:", e)
+					}
+					content, e := io.ReadAll(file)
+					if e != nil {
+						log.Fatal("hdfs read file error:", e)
+					}
+					file.Close()
 
 					// create intermediate file
 					kva := mapf(filename, string(content))
 					for _, kv := range kva {
 						reduce := ihash(kv.Key) % task.NReduce
-						filename := fmt.Sprintf("mr-%v-%v-%v", task.ID, reduce, workID)
+						filename := fmt.Sprintf("/mr/mr-%v-%v-%v", task.ID, reduce, workID)
 
-						var file *os.File
+						if e != nil {
+							log.Fatal("hdfs error:", e)
+						}
+
+						var file *hdfs.FileWriter
 						if _, ok := intermediate[reduce]; !ok {
 							intermediate[reduce] = filename
-							file, _ = os.Create(filename)
+							file, _ = client.Create(filename)
 						} else {
-							file, _ = os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+							file, _ = client.Append(filename)
 						}
 
 						enc := json.NewEncoder(file)
@@ -87,7 +107,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				// read all kv
 				for _, filename := range task.InputFiles {
 					// open and get content
-					file, err := os.Open(filename)
+					file, err := client.Open(filename)
 					if err != nil {
 						log.Fatalf("cannot open %v", filename)
 					}
@@ -103,14 +123,9 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				sort.Sort(ByKey(kva))
 
-				oname := fmt.Sprintf("mr-out-%v", task.ID)
-				var ofile *os.File
-				if _, err := os.Stat(oname); os.IsNotExist(err) {
-					ofile, _ = os.Create(oname)
-				} else {
-					// there could be a race condition here, but it's ok
-					ofile, _ = os.OpenFile(oname, os.O_WRONLY, 0644)
-				}
+				oname := fmt.Sprintf("/mr/mr-out-%v", task.ID)
+				ofile, _ := client.Create(oname)
+
 				i := 0
 				for i < len(kva) {
 					j := i + 1
@@ -139,27 +154,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 }
 
-func ReadFile(filename string) []byte {
-	file, err := os.Open(filename)
-	if err != nil {
-		log.Fatalf("cannot open %v", filename)
-	}
-	content, err := io.ReadAll(file)
-	if err != nil {
-		log.Fatalf("cannot read %v", filename)
-	}
-	file.Close()
-
-	return content
-}
-
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := masterSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	c, err := rpc.DialHTTP("tcp", masterAddress+":1234")
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
