@@ -2,12 +2,15 @@ package mr
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +139,32 @@ func (c *Master) server() {
 func (c *Master) Done() bool {
 	if c.ReduceDone {
 		close(c.Tasks)
+
+		client, e := hdfs.New(masterAddress + ":9000")
+		if e != nil {
+			log.Fatal("hdfs error:", e)
+		}
+
+		// read all reduce output file
+		var ans []string
+		for i := 0; i < c.NReduce; i++ {
+			oname := fmt.Sprintf("/mr/mr-out-%v", i)
+			file, e := client.Open(oname)
+			if e != nil {
+				log.Fatal("hdfs open file error:", e)
+			}
+			content, e := io.ReadAll(file)
+			if e != nil {
+				log.Fatal("hdfs read file error:", e)
+			}
+			file.Close()
+			ans = append(ans, string(content))
+		}
+
+		sort.Strings(ans)
+
+		// directly print ans
+		fmt.Print(strings.Join(ans, ""))
 	}
 	return c.ReduceDone
 }
@@ -163,7 +192,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	var i TaskID
 	for f := range files {
-    client.Mkdir("/mr", 0644)
+		client.Mkdir("/mr", 0777)
 
 		// upload input files
 		localFile, e := os.Open(files[f])

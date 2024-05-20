@@ -11,12 +11,13 @@ go build -buildmode=plugin wordcount.go || exit 1
 
 cd ../main
 
-echo "Run Master"
+/home/gentle/projects/homeworks/distribute_system/hadoop-2.10.1/bin/hdfs dfs -rm -r /mr
 
-/home/gentle/projects/homeworks/distribute_system/hadoop-2.10.1/bin/hdfs dfs -rm /mr
+echo "Run Master"
 
 ./mrmaster input.txt &
 
+sleep 1s
 echo "Run Worker"
 
 ./mrworker ../apps/wordcount.so &
